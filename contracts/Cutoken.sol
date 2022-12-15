@@ -243,7 +243,7 @@ contract Cutoken is IERC20, Ownable {
     mapping(address => uint256) private _tOwned;
     mapping(address => mapping(address => uint256)) private _allowances;
 
-    mapping(address => bool) public automatedMarketMakerPairs;
+    mapping(address => bool) public ammPairs;
 
     mapping(address => bool) private _isExcludedFromFee;
 
@@ -286,7 +286,7 @@ contract Cutoken is IERC20, Ownable {
 
     address public marketingWallet;
     address public burnWallet;
-    address public liquidityMultiSigWallet; // Must be Multi-Signature Wallet.
+    address public liquidityMultiSig; // Must be Multi-Signature Wallet.
     address public teamWallet;
 
     IV2Router02 public _v2Router;
@@ -332,7 +332,7 @@ contract Cutoken is IERC20, Ownable {
     );
     event LogSetLiquidityWallet(
         address indexed setter,
-        address liquidityMultiSigWallet
+        address liquidityMultiSig
     );
     event LogSetBurnWallet(address indexed setter, address burnWallet);
     event LogSetTeamWallet(address indexed setter, address teamWallet);
@@ -361,13 +361,13 @@ contract Cutoken is IERC20, Ownable {
         address _router,
         address _marketingWallet,
         address _teamWallet,
-        address _liquidityMultiSigWallet
+        address _liquidityMultiSig
     ) {
         _rOwned[_msgSender()] = _rTotal;
 
         marketingWallet = _marketingWallet;
         burnWallet = address(0xdead);
-        liquidityMultiSigWallet = _liquidityMultiSigWallet;
+        liquidityMultiSig = _liquidityMultiSig;
         teamWallet = _teamWallet;
 
         IV2Router02 __v2Router = IV2Router02(_router);
@@ -778,10 +778,10 @@ contract Cutoken is IERC20, Ownable {
         if (
             overMinTokenBalance &&
             !inSwapAndLiquify &&
-            !automatedMarketMakerPairs[from] &&
+            !ammPairs[from] &&
             swapAndLiquifyEnabled &&
-            from != liquidityMultiSigWallet &&
-            to != liquidityMultiSigWallet
+            from != liquidityMultiSig &&
+            to != liquidityMultiSig
         ) {
             contractTokenBalance = numTokensSellToAddToLiquidity;
 
@@ -912,7 +912,7 @@ contract Cutoken is IERC20, Ownable {
             tokenAmount,
             0, // slippage is unavoidable
             0, // slippage is unavoidable
-            liquidityMultiSigWallet,
+            liquidityMultiSig,
             block.timestamp
         );
     }
@@ -925,10 +925,10 @@ contract Cutoken is IERC20, Ownable {
         if (!_isExcludedFromFee[sender] && !_isExcludedFromFee[recipient]) {
             require(isTradingEnabled, "Trading is disabled");
 
-            if (automatedMarketMakerPairs[sender] == true) {
+            if (ammPairs[sender] == true) {
                 shouldTakeFee = true;
                 setBuyFee();
-            } else if (automatedMarketMakerPairs[recipient] == true) {
+            } else if (ammPairs[recipient] == true) {
                 shouldTakeFee = true;
                 setSellFee();
             }
@@ -1114,10 +1114,10 @@ contract Cutoken is IERC20, Ownable {
     {
         require(newLiquidityMultiSigWallet != address(0), "Zero Address");
         require(
-            newLiquidityMultiSigWallet != liquidityMultiSigWallet,
+            newLiquidityMultiSigWallet != liquidityMultiSig,
             "Same Address"
         );
-        liquidityMultiSigWallet = newLiquidityMultiSigWallet;
+        liquidityMultiSig = newLiquidityMultiSigWallet;
         emit LogSetLiquidityWallet(msg.sender, newLiquidityMultiSigWallet);
     }
 
@@ -1192,10 +1192,10 @@ contract Cutoken is IERC20, Ownable {
     {
         require(pair != address(0), "Zero Address");
         require(
-            automatedMarketMakerPairs[pair] != enabled,
+            ammPairs[pair] != enabled,
             "Already set the same value"
         );
-        automatedMarketMakerPairs[pair] = enabled;
+        ammPairs[pair] = enabled;
 
         emit LogSetAutomatedMarketMakerPair(msg.sender, pair, enabled);
     }
