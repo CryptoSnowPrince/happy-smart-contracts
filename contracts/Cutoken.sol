@@ -87,6 +87,28 @@ interface IERC20 {
 }
 
 /**
+ * @dev Interface for the optional metadata functions from the ERC20 standard.
+ *
+ * _Available since v4.1._
+ */
+interface IERC20Metadata is IERC20 {
+    /**
+     * @dev Returns the name of the token.
+     */
+    function name() external view returns (string memory);
+
+    /**
+     * @dev Returns the symbol of the token.
+     */
+    function symbol() external view returns (string memory);
+
+    /**
+     * @dev Returns the decimals places of the token.
+     */
+    function decimals() external view returns (uint8);
+}
+
+/**
  * @dev Provides information about the current execution context, including the
  * sender of the transaction and its data. While these are generally available
  * via msg.sender and msg.data, they should not be accessed in such a direct
@@ -107,656 +129,352 @@ abstract contract Context {
 }
 
 /**
- * @dev Contract module which provides a basic access control mechanism, where
- * there is an account (an owner) that can be granted exclusive access to
- * specific functions.
+ * @dev Implementation of the {IERC20} interface.
  *
- * By default, the owner account will be the one that deploys the contract. This
- * can later be changed with {transferOwnership}.
+ * This implementation is agnostic to the way tokens are created. This means
+ * that a supply mechanism has to be added in a derived contract using {_mint}.
+ * For a generic mechanism see {ERC20PresetMinterPauser}.
  *
- * This module is used through inheritance. It will make available the modifier
- * `onlyMultiSig`, which can be applied to your functions to restrict their use to
- * the owner.
+ * TIP: For a detailed writeup see our guide
+ * https://forum.openzeppelin.com/t/how-to-implement-erc20-supply-mechanisms/226[How
+ * to implement supply mechanisms].
+ *
+ * We have followed general OpenZeppelin Contracts guidelines: functions revert
+ * instead returning `false` on failure. This behavior is nonetheless
+ * conventional and does not conflict with the expectations of ERC20
+ * applications.
+ *
+ * Additionally, an {Approval} event is emitted on calls to {transferFrom}.
+ * This allows applications to reconstruct the allowance for all accounts just
+ * by listening to said events. Other implementations of the EIP may not emit
+ * these events, as it isn't required by the specification.
+ *
+ * Finally, the non-standard {decreaseAllowance} and {increaseAllowance}
+ * functions have been added to mitigate the well-known issues around setting
+ * allowances. See {IERC20-approve}.
  */
-abstract contract Ownable is Context {
-    /**
-     * @dev Must be Multi-Signature Wallet.
-     */
-    address private _multiSigOwner;
+contract ERC20 is Context, IERC20, IERC20Metadata {
+    mapping(address => uint256) private _balances;
 
-    event OwnershipTransferred(
-        address indexed previousOwner,
-        address indexed newOwner
-    );
-
-    /**
-     * @dev Initializes the contract setting the deployer as the initial owner.
-     */
-    constructor() {
-        _transferOwnership(_msgSender());
-    }
-
-    /**
-     * @dev Throws if called by any account other than the owner.
-     */
-    modifier onlyMultiSig() {
-        _checkOwner();
-        _;
-    }
-
-    /**
-     * @dev Returns the address of the current owner.
-     */
-    function owner() public view virtual returns (address) {
-        return _multiSigOwner;
-    }
-
-    /**
-     * @dev Throws if the sender is not the owner.
-     */
-    function _checkOwner() internal view virtual {
-        require(owner() == _msgSender(), "Ownable: caller is not the owner");
-    }
-
-    /**
-     * @dev Leaves the contract without owner. It will not be possible to call
-     * `onlyMultiSig` functions anymore. Can only be called by the current owner.
-     *
-     * NOTE: Renouncing ownership will leave the contract without an owner,
-     * thereby removing any functionality that is only available to the owner.
-     */
-    function renounceOwnership() external virtual onlyMultiSig {
-        _transferOwnership(address(0));
-    }
-
-    /**
-     * @dev Transfers ownership of the contract to a new account (`newOwner`).
-     * Can only be called by the current owner.
-     */
-    function transferOwnership(address newOwner) external virtual onlyMultiSig {
-        require(
-            newOwner != address(0),
-            "Ownable: new owner is the zero address"
-        );
-        _transferOwnership(newOwner);
-    }
-
-    /**
-     * @dev Transfers ownership of the contract to a new account (`newOwner`).
-     * Internal function without access restriction.
-     */
-    function _transferOwnership(address newOwner) internal virtual {
-        address oldOwner = _multiSigOwner;
-        _multiSigOwner = newOwner;
-        emit OwnershipTransferred(oldOwner, newOwner);
-    }
-}
-
-interface IV2Factory {
-    function createPair(address tokenA, address tokenB)
-        external
-        returns (address pair);
-}
-
-interface IV2Router01 {
-    function factory() external pure returns (address);
-
-    function WETH() external pure returns (address);
-
-    function addLiquidityETH(
-        address token,
-        uint256 amountTokenDesired,
-        uint256 amountTokenMin,
-        uint256 amountETHMin,
-        address to,
-        uint256 deadline
-    )
-        external
-        payable
-        returns (
-            uint256 amountToken,
-            uint256 amountETH,
-            uint256 liquidity
-        );
-}
-
-interface IV2Router02 is IV2Router01 {
-    function swapExactTokensForETHSupportingFeeOnTransferTokens(
-        uint256 amountIn,
-        uint256 amountOutMin,
-        address[] calldata path,
-        address to,
-        uint256 deadline
-    ) external;
-}
-
-/**
- * @dev Cutoken token contract
- *
- * The `owner` account of Cutoken token contract will be multi-sig wallet.
- */
-contract Cutoken is IERC20, Ownable {
-    uint256 public constant MAX_BUY_FEE = 50;
-    uint256 public constant MAX_SELL_FEE = 50;
-
-    mapping(address => uint256) private _rOwned;
-    mapping(address => uint256) private _tOwned;
     mapping(address => mapping(address => uint256)) private _allowances;
 
-    mapping(address => bool) public ammPairs;
+    uint256 private _totalSupply;
 
-    mapping(address => bool) private _isExcludedFromFee;
+    string private _name;
+    string private _symbol;
 
-    mapping(address => bool) private _isExcluded;
-    address[] private _excluded;
-
-    struct BuyFee {
-        uint256 autoLp;
-        uint256 burn;
-        uint256 marketing;
-        uint256 tax;
-        uint256 team;
-    }
-
-    struct SellFee {
-        uint256 autoLp;
-        uint256 burn;
-        uint256 marketing;
-        uint256 tax;
-        uint256 team;
-    }
-
-    BuyFee public buyFee;
-    SellFee public sellFee;
-
-    uint256 private constant MAX = ~uint256(0);
-    uint256 private _tTotal = 10**9 * 10**9;
-    uint256 private _rTotal = (MAX - (MAX % _tTotal));
-    uint256 private _tFeeTotal;
-
-    string private _name = "Cutoken";
-    string private _symbol = "CT";
-    uint8 private _decimals = 9;
-
-    uint256 public _taxFee = 0;
-    uint256 public _liquidityFee = 0;
-    uint256 public _burnFee = 0;
-    uint256 public _marketingFee = 0;
-    uint256 public _teamFee = 0;
-
-    address public marketingWallet;
-    address public burnWallet;
-    address public liquidityMultiSig; // Must be Multi-Signature Wallet.
-    address public teamWallet;
-
-    IV2Router02 public _v2Router;
-
-    bool private inSwapAndLiquify;
-    bool private shouldTakeFee = false;
-    bool public swapAndLiquifyEnabled = true;
-    bool public isTradingEnabled;
-
-    uint256 public numTokensSellToAddToLiquidity = 8000 * 10**9;
-
-    event LogSetAutomatedMarketMakerPair(
-        address indexed setter,
-        address pair,
-        bool enabled
-    );
-    event LogSwapAndLiquify(
-        uint256 tokensSwapped,
-        uint256 ethReceived,
-        uint256 tokensIntoLiquidity
-    );
-    event LogSwapAndDistribute(
-        uint256 forMarketing,
-        uint256 forLiquidity,
-        uint256 forBurn,
-        uint256 forTeam
-    );
-    event LogSwapAndLiquifyEnabledUpdated(address indexed setter, bool enabled);
-    event LogSetSwapTokensAmount(address indexed setter, uint256 amount);
-    event LogSetExcludeFromFee(
-        address indexed setter,
-        address account,
-        bool enabled
-    );
-    event LogExcludeFromReward(address indexed account);
-    event LogIncludeInReward(address indexed account);
-    event LogFallback(address from, uint256 amount);
-    event LogReceive(address from, uint256 amount);
-    event LogSetEnableTrading(bool enabled);
-    event LogSetMarketingWallet(
-        address indexed setter,
-        address marketingWallet
-    );
-    event LogSetLiquidityWallet(
-        address indexed setter,
-        address liquidityMultiSig
-    );
-    event LogSetBurnWallet(address indexed setter, address burnWallet);
-    event LogSetTeamWallet(address indexed setter, address teamWallet);
-    event LogSetBuyFees(address indexed setter, BuyFee buyFee);
-    event LogSetSellFees(address indexed setter, SellFee sellFee);
-    event LogSetRouterAddress(address indexed setter, address router);
-    event LogWithdrawalETH(address indexed recipient, uint256 amount);
-    event LogWithdrawToken(
-        address indexed token,
-        address indexed recipient,
-        uint256 amount
-    );
-    event LogWithdrawal(address indexed recipient, uint256 tAmount);
-    event LogDeliver(address indexed from, uint256 tAmount);
-
-    modifier lockTheSwap() {
-        inSwapAndLiquify = true;
-        _;
-        inSwapAndLiquify = false;
+    /**
+     * @dev Sets the values for {name} and {symbol}.
+     *
+     * The default value of {decimals} is 18. To select a different value for
+     * {decimals} you should overload it.
+     *
+     * All two of these values are immutable: they can only be set once during
+     * construction.
+     */
+    constructor(string memory name_, string memory symbol_) {
+        _name = name_;
+        _symbol = symbol_;
     }
 
     /**
-     * @dev It is not need to do `Zero-address check` of input params because deployer will check this before deploy.
+     * @dev Returns the name of the token.
      */
-    constructor(
-        address _router,
-        address _marketingWallet,
-        address _teamWallet,
-        address _liquidityMultiSig
-    ) {
-        _rOwned[_msgSender()] = _rTotal;
-
-        marketingWallet = _marketingWallet;
-        burnWallet = address(0xdead);
-        liquidityMultiSig = _liquidityMultiSig;
-        teamWallet = _teamWallet;
-
-        IV2Router02 __v2Router = IV2Router02(_router);
-        address pair = IV2Factory(__v2Router.factory()).createPair(
-            address(this),
-            __v2Router.WETH()
-        );
-
-        setAutomatedMarketMakerPair(pair, true);
-
-        _v2Router = __v2Router;
-
-        _isExcludedFromFee[address(this)] = true;
-        _isExcludedFromFee[owner()] = true;
-
-        buyFee.autoLp = 4;
-        buyFee.burn = 0;
-        buyFee.marketing = 3;
-        buyFee.tax = 2;
-        buyFee.team = 1;
-
-        sellFee.autoLp = 4;
-        sellFee.burn = 0;
-        sellFee.marketing = 3;
-        sellFee.tax = 2;
-        sellFee.team = 1;
-
-        emit Transfer(address(0), _msgSender(), _tTotal);
-    }
-
-    function name() external view returns (string memory) {
+    function name() public view virtual override returns (string memory) {
         return _name;
     }
 
-    function symbol() external view returns (string memory) {
+    /**
+     * @dev Returns the symbol of the token, usually a shorter version of the
+     * name.
+     */
+    function symbol() public view virtual override returns (string memory) {
         return _symbol;
     }
 
-    function decimals() external view returns (uint8) {
-        return _decimals;
-    }
-
-    function totalSupply() external view override returns (uint256) {
-        return _tTotal;
+    /**
+     * @dev Returns the number of decimals used to get its user representation.
+     * For example, if `decimals` equals `2`, a balance of `505` tokens should
+     * be displayed to a user as `5.05` (`505 / 10 ** 2`).
+     *
+     * Tokens usually opt for a value of 18, imitating the relationship between
+     * Ether and Wei. This is the value {ERC20} uses, unless this function is
+     * overridden;
+     *
+     * NOTE: This information is only used for _display_ purposes: it in
+     * no way affects any of the arithmetic of the contract, including
+     * {IERC20-balanceOf} and {IERC20-transfer}.
+     */
+    function decimals() public view virtual override returns (uint8) {
+        return 18;
     }
 
     /**
-     * @dev Returns the subtraction of two unsigned integers, reverting with custom message on
-     * overflow (when the result is negative). Referenced from SafeMath library to preserve transaction integrity.
+     * @dev See {IERC20-totalSupply}.
      */
-    function balanceCheck(
-        uint256 a,
-        uint256 b,
-        string memory errorMessage
-    ) internal pure returns (uint256) {
-        require(b <= a, errorMessage);
-        uint256 c = a - b;
-
-        return c;
+    function totalSupply() public view virtual override returns (uint256) {
+        return _totalSupply;
     }
 
-    function balanceOf(address account) public view override returns (uint256) {
-        if (_isExcluded[account]) return _tOwned[account];
-        return tokenFromReflection(_rOwned[account]);
+    /**
+     * @dev See {IERC20-balanceOf}.
+     */
+    function balanceOf(address account)
+        public
+        view
+        virtual
+        override
+        returns (uint256)
+    {
+        return _balances[account];
     }
 
-    function transfer(address recipient, uint256 amount)
-        external
+    /**
+     * @dev See {IERC20-transfer}.
+     *
+     * Requirements:
+     *
+     * - `to` cannot be the zero address.
+     * - the caller must have a balance of at least `amount`.
+     */
+    function transfer(address to, uint256 amount)
+        public
+        virtual
         override
         returns (bool)
     {
-        _transfer(_msgSender(), recipient, amount);
+        address owner = _msgSender();
+        _transfer(owner, to, amount);
         return true;
     }
 
+    /**
+     * @dev See {IERC20-allowance}.
+     */
     function allowance(address owner, address spender)
-        external
+        public
         view
+        virtual
         override
         returns (uint256)
     {
         return _allowances[owner][spender];
     }
 
+    /**
+     * @dev See {IERC20-approve}.
+     *
+     * NOTE: If `amount` is the maximum `uint256`, the allowance is not updated on
+     * `transferFrom`. This is semantically equivalent to an infinite approval.
+     *
+     * Requirements:
+     *
+     * - `spender` cannot be the zero address.
+     */
     function approve(address spender, uint256 amount)
-        external
+        public
+        virtual
         override
         returns (bool)
     {
-        _approve(_msgSender(), spender, amount);
-        return true;
-    }
-
-    function transferFrom(
-        address sender,
-        address recipient,
-        uint256 amount
-    ) external override returns (bool) {
-        _transfer(sender, recipient, amount);
-        _approve(
-            sender,
-            _msgSender(),
-            balanceCheck(
-                _allowances[sender][_msgSender()],
-                amount,
-                "ERC20: transfer amount exceeds allowance"
-            )
-        );
-        return true;
-    }
-
-    function increaseAllowance(address spender, uint256 addedValue)
-        external
-        virtual
-        returns (bool)
-    {
-        _approve(
-            _msgSender(),
-            spender,
-            _allowances[_msgSender()][spender] + addedValue
-        );
-        return true;
-    }
-
-    function decreaseAllowance(address spender, uint256 subtractedValue)
-        external
-        virtual
-        returns (bool)
-    {
-        _approve(
-            _msgSender(),
-            spender,
-            balanceCheck(
-                _allowances[_msgSender()][spender],
-                subtractedValue,
-                "ERC20: decreased allowance below zero"
-            )
-        );
+        address owner = _msgSender();
+        _approve(owner, spender, amount);
         return true;
     }
 
     /**
-     * @dev Reflection by action of any holder of token.
+     * @dev See {IERC20-transferFrom}.
+     *
+     * Emits an {Approval} event indicating the updated allowance. This is not
+     * required by the EIP. See the note at the beginning of {ERC20}.
+     *
+     * NOTE: Does not update the allowance if the current allowance
+     * is the maximum `uint256`.
+     *
+     * Requirements:
+     *
+     * - `from` and `to` cannot be the zero address.
+     * - `from` must have a balance of at least `amount`.
+     * - the caller must have allowance for ``from``'s tokens of at least
+     * `amount`.
      */
-    function deliver(uint256 tAmount) external {
-        address sender = _msgSender();
-        require(
-            !_isExcluded[sender],
-            "Excluded addresses cannot call this function"
-        );
-        (uint256 rAmount, , , , , ) = _getValues(tAmount);
-        _rOwned[sender] = _rOwned[sender] - rAmount;
-        _rTotal = _rTotal - rAmount;
-        _tFeeTotal = _tFeeTotal + tAmount;
-
-        emit LogDeliver(msg.sender, tAmount);
+    function transferFrom(
+        address from,
+        address to,
+        uint256 amount
+    ) public virtual override returns (bool) {
+        address spender = _msgSender();
+        _spendAllowance(from, spender, amount);
+        _transfer(from, to, amount);
+        return true;
     }
 
-    function reflectionFromToken(uint256 tAmount, bool deductTransferFee)
-        external
-        view
-        returns (uint256)
-    {
-        require(tAmount <= _tTotal, "Amount must be less than supply");
-        if (!deductTransferFee) {
-            (uint256 rAmount, , , , , ) = _getValues(tAmount);
-            return rAmount;
-        } else {
-            (, uint256 rTransferAmount, , , , ) = _getValues(tAmount);
-            return rTransferAmount;
-        }
-    }
-
-    function tokenFromReflection(uint256 rAmount)
+    /**
+     * @dev Atomically increases the allowance granted to `spender` by the caller.
+     *
+     * This is an alternative to {approve} that can be used as a mitigation for
+     * problems described in {IERC20-approve}.
+     *
+     * Emits an {Approval} event indicating the updated allowance.
+     *
+     * Requirements:
+     *
+     * - `spender` cannot be the zero address.
+     */
+    function increaseAllowance(address spender, uint256 addedValue)
         public
-        view
-        returns (uint256)
+        virtual
+        returns (bool)
     {
+        address owner = _msgSender();
+        _approve(owner, spender, allowance(owner, spender) + addedValue);
+        return true;
+    }
+
+    /**
+     * @dev Atomically decreases the allowance granted to `spender` by the caller.
+     *
+     * This is an alternative to {approve} that can be used as a mitigation for
+     * problems described in {IERC20-approve}.
+     *
+     * Emits an {Approval} event indicating the updated allowance.
+     *
+     * Requirements:
+     *
+     * - `spender` cannot be the zero address.
+     * - `spender` must have allowance for the caller of at least
+     * `subtractedValue`.
+     */
+    function decreaseAllowance(address spender, uint256 subtractedValue)
+        public
+        virtual
+        returns (bool)
+    {
+        address owner = _msgSender();
+        uint256 currentAllowance = allowance(owner, spender);
         require(
-            rAmount <= _rTotal,
-            "Amount must be less than total reflections"
+            currentAllowance >= subtractedValue,
+            "ERC20: decreased allowance below zero"
         );
-        uint256 currentRate = _getRate();
-        return rAmount / currentRate;
-    }
-
-    receive() external payable {
-        emit LogReceive(msg.sender, msg.value);
-    }
-
-    fallback() external payable {
-        emit LogFallback(msg.sender, msg.value);
-    }
-
-    function _reflectFee(uint256 rFee, uint256 tFee) private {
-        _rTotal = _rTotal - rFee;
-        _tFeeTotal = _tFeeTotal + tFee;
-    }
-
-    function _getValues(uint256 tAmount)
-        private
-        view
-        returns (
-            uint256,
-            uint256,
-            uint256,
-            uint256,
-            uint256,
-            uint256
-        )
-    {
-        (
-            uint256 tTransferAmount,
-            uint256 tFee,
-            uint256 tLiquidity,
-            uint256 tMarketing,
-            uint256 tBurn
-        ) = _getTValues(tAmount);
-        (uint256 rAmount, uint256 rTransferAmount, uint256 rFee) = _getRValues(
-            tAmount,
-            tFee,
-            tLiquidity,
-            tMarketing,
-            tBurn,
-            _getRate()
-        );
-        return (
-            rAmount,
-            rTransferAmount,
-            rFee,
-            tTransferAmount,
-            tFee,
-            tLiquidity
-        );
-    }
-
-    function _getTValues(uint256 tAmount)
-        private
-        view
-        returns (
-            uint256,
-            uint256,
-            uint256,
-            uint256,
-            uint256
-        )
-    {
-        uint256 tFee = calculateTaxFee(tAmount);
-        uint256 tLiquidity = calculateLiquidityFee(tAmount);
-        uint256 tMarketing = calculateMarketingFee(tAmount);
-        uint256 tBurn = calculateBurnFee(tAmount);
-        uint256 tTeam = calculateTeamFee(tAmount);
-        uint256 tTransferAmount = tAmount - (tFee + tLiquidity);
-        tTransferAmount = tTransferAmount - (tMarketing + tBurn + tTeam);
-        return (tTransferAmount, tFee, tLiquidity, tMarketing, tBurn);
-    }
-
-    function _getRValues(
-        uint256 tAmount,
-        uint256 tFee,
-        uint256 tLiquidity,
-        uint256 tMarketing,
-        uint256 tBurn,
-        uint256 currentRate
-    )
-        private
-        view
-        returns (
-            uint256,
-            uint256,
-            uint256
-        )
-    {
-        uint256 rAmount = tAmount * currentRate;
-        uint256 rFee = tFee * currentRate;
-        uint256 rLiquidity = tLiquidity * currentRate;
-        uint256 rMarketing = tMarketing * currentRate;
-        uint256 rBurn = tBurn * currentRate;
-        uint256 tTeam = calculateTeamFee(tAmount);
-        uint256 rTeam = tTeam * currentRate;
-        uint256 rTransferAmount = rAmount -
-            (rFee + rLiquidity + rMarketing + rBurn + rTeam);
-        return (rAmount, rTransferAmount, rFee);
-    }
-
-    function _getRate() private view returns (uint256) {
-        (uint256 rSupply, uint256 tSupply) = _getCurrentSupply();
-        return rSupply / tSupply;
-    }
-
-    function _getCurrentSupply() private view returns (uint256, uint256) {
-        uint256 rSupply = _rTotal;
-        uint256 tSupply = _tTotal;
-        for (uint256 i = 0; i < _excluded.length; i++) {
-            if (
-                _rOwned[_excluded[i]] > rSupply ||
-                _tOwned[_excluded[i]] > tSupply
-            ) return (_rTotal, _tTotal);
-            rSupply = rSupply - _rOwned[_excluded[i]];
-            tSupply = tSupply - _tOwned[_excluded[i]];
+        unchecked {
+            _approve(owner, spender, currentAllowance - subtractedValue);
         }
-        if (rSupply < (_rTotal / _tTotal)) return (_rTotal, _tTotal);
-        return (rSupply, tSupply);
+
+        return true;
     }
 
-    function _takeLiquidity(uint256 tLiquidity) private {
-        uint256 currentRate = _getRate();
-        uint256 rLiquidity = tLiquidity * currentRate;
-        _rOwned[address(this)] = _rOwned[address(this)] + rLiquidity;
-        if (_isExcluded[address(this)])
-            _tOwned[address(this)] = _tOwned[address(this)] + tLiquidity;
+    /**
+     * @dev Moves `amount` of tokens from `from` to `to`.
+     *
+     * This internal function is equivalent to {transfer}, and can be used to
+     * e.g. implement automatic token fees, slashing mechanisms, etc.
+     *
+     * Emits a {Transfer} event.
+     *
+     * Requirements:
+     *
+     * - `from` cannot be the zero address.
+     * - `to` cannot be the zero address.
+     * - `from` must have a balance of at least `amount`.
+     */
+    function _transfer(
+        address from,
+        address to,
+        uint256 amount
+    ) internal virtual {
+        require(from != address(0), "ERC20: transfer from the zero address");
+        require(to != address(0), "ERC20: transfer to the zero address");
+
+        _beforeTokenTransfer(from, to, amount);
+
+        uint256 fromBalance = _balances[from];
+        require(
+            fromBalance >= amount,
+            "ERC20: transfer amount exceeds balance"
+        );
+        unchecked {
+            _balances[from] = fromBalance - amount;
+            // Overflow not possible: the sum of all balances is capped by totalSupply, and the sum is preserved by
+            // decrementing then incrementing.
+            _balances[to] += amount;
+        }
+
+        emit Transfer(from, to, amount);
+
+        _afterTokenTransfer(from, to, amount);
     }
 
-    function _takeTeam(uint256 tTeam) private {
-        uint256 currentRate = _getRate();
-        uint256 rTeam = tTeam * currentRate;
-        _rOwned[address(this)] = _rOwned[address(this)] + rTeam;
-        if (_isExcluded[address(this)])
-            _tOwned[address(this)] = _tOwned[address(this)] + tTeam;
+    /** @dev Creates `amount` tokens and assigns them to `account`, increasing
+     * the total supply.
+     *
+     * Emits a {Transfer} event with `from` set to the zero address.
+     *
+     * Requirements:
+     *
+     * - `account` cannot be the zero address.
+     */
+    function _mint(address account, uint256 amount) internal virtual {
+        require(account != address(0), "ERC20: mint to the zero address");
+
+        _beforeTokenTransfer(address(0), account, amount);
+
+        _totalSupply += amount;
+        unchecked {
+            // Overflow not possible: balance + amount is at most totalSupply + amount, which is checked above.
+            _balances[account] += amount;
+        }
+        emit Transfer(address(0), account, amount);
+
+        _afterTokenTransfer(address(0), account, amount);
     }
 
-    function _takeMarketingAndBurn(uint256 tMarketing, uint256 tBurn) private {
-        uint256 currentRate = _getRate();
-        uint256 rMarketing = tMarketing * currentRate;
-        uint256 rBurn = tBurn * currentRate;
-        _rOwned[address(this)] = _rOwned[address(this)] + (rBurn + rMarketing);
-        if (_isExcluded[address(this)])
-            _tOwned[address(this)] =
-                _tOwned[address(this)] +
-                (tMarketing + tBurn);
+    /**
+     * @dev Destroys `amount` tokens from `account`, reducing the
+     * total supply.
+     *
+     * Emits a {Transfer} event with `to` set to the zero address.
+     *
+     * Requirements:
+     *
+     * - `account` cannot be the zero address.
+     * - `account` must have at least `amount` tokens.
+     */
+    function _burn(address account, uint256 amount) internal virtual {
+        require(account != address(0), "ERC20: burn from the zero address");
+
+        _beforeTokenTransfer(account, address(0), amount);
+
+        uint256 accountBalance = _balances[account];
+        require(accountBalance >= amount, "ERC20: burn amount exceeds balance");
+        unchecked {
+            _balances[account] = accountBalance - amount;
+            // Overflow not possible: amount <= accountBalance <= totalSupply.
+            _totalSupply -= amount;
+        }
+
+        emit Transfer(account, address(0), amount);
+
+        _afterTokenTransfer(account, address(0), amount);
     }
 
-    function calculateTaxFee(uint256 _amount) private view returns (uint256) {
-        return (_amount * _taxFee) / 10**2;
-    }
-
-    function calculateLiquidityFee(uint256 _amount)
-        private
-        view
-        returns (uint256)
-    {
-        return (_amount * _liquidityFee) / 10**2;
-    }
-
-    function calculateBurnFee(uint256 _amount) private view returns (uint256) {
-        return (_amount * _burnFee) / 10**2;
-    }
-
-    function calculateMarketingFee(uint256 _amount)
-        private
-        view
-        returns (uint256)
-    {
-        return (_amount * _marketingFee) / 10**2;
-    }
-
-    function calculateTeamFee(uint256 _amount) private view returns (uint256) {
-        return (_amount * _teamFee) / 10**2;
-    }
-
-    function restoreAllFee() private {
-        _taxFee = 0;
-        _liquidityFee = 0;
-        _marketingFee = 0;
-        _burnFee = 0;
-        _teamFee = 0;
-    }
-
-    function setBuyFee() private {
-        _taxFee = buyFee.tax;
-        _liquidityFee = buyFee.autoLp;
-        _marketingFee = buyFee.marketing;
-        _burnFee = buyFee.burn;
-        _teamFee = buyFee.team;
-    }
-
-    function setSellFee() private {
-        _taxFee = sellFee.tax;
-        _liquidityFee = sellFee.autoLp;
-        _marketingFee = sellFee.marketing;
-        _burnFee = sellFee.burn;
-        _teamFee = sellFee.team;
-    }
-
+    /**
+     * @dev Sets `amount` as the allowance of `spender` over the `owner` s tokens.
+     *
+     * This internal function is equivalent to `approve`, and can be used to
+     * e.g. set automatic allowances for certain subsystems, etc.
+     *
+     * Emits an {Approval} event.
+     *
+     * Requirements:
+     *
+     * - `owner` cannot be the zero address.
+     * - `spender` cannot be the zero address.
+     */
     function _approve(
         address owner,
         address spender,
         uint256 amount
-    ) private {
+    ) internal virtual {
         require(owner != address(0), "ERC20: approve from the zero address");
         require(spender != address(0), "ERC20: approve to the zero address");
 
@@ -764,545 +482,68 @@ contract Cutoken is IERC20, Ownable {
         emit Approval(owner, spender, amount);
     }
 
-    function _transfer(
+    /**
+     * @dev Updates `owner` s allowance for `spender` based on spent `amount`.
+     *
+     * Does not update the allowance amount in case of infinite allowance.
+     * Revert if not enough allowance is available.
+     *
+     * Might emit an {Approval} event.
+     */
+    function _spendAllowance(
+        address owner,
+        address spender,
+        uint256 amount
+    ) internal virtual {
+        uint256 currentAllowance = allowance(owner, spender);
+        if (currentAllowance != type(uint256).max) {
+            require(
+                currentAllowance >= amount,
+                "ERC20: insufficient allowance"
+            );
+            unchecked {
+                _approve(owner, spender, currentAllowance - amount);
+            }
+        }
+    }
+
+    /**
+     * @dev Hook that is called before any transfer of tokens. This includes
+     * minting and burning.
+     *
+     * Calling conditions:
+     *
+     * - when `from` and `to` are both non-zero, `amount` of ``from``'s tokens
+     * will be transferred to `to`.
+     * - when `from` is zero, `amount` tokens will be minted for `to`.
+     * - when `to` is zero, `amount` of ``from``'s tokens will be burned.
+     * - `from` and `to` are never both zero.
+     *
+     * To learn more about hooks, head to xref:ROOT:extending-contracts.adoc#using-hooks[Using Hooks].
+     */
+    function _beforeTokenTransfer(
         address from,
         address to,
         uint256 amount
-    ) private {
-        require(from != address(0), "ERC20: transfer from the zero address");
-        require(to != address(0), "ERC20: transfer to the zero address");
+    ) internal virtual {}
 
-        uint256 contractTokenBalance = balanceOf(address(this));
-        bool overMinTokenBalance = contractTokenBalance >=
-            numTokensSellToAddToLiquidity;
-        if (
-            overMinTokenBalance &&
-            !inSwapAndLiquify &&
-            !ammPairs[from] &&
-            swapAndLiquifyEnabled &&
-            from != liquidityMultiSig &&
-            to != liquidityMultiSig
-        ) {
-            contractTokenBalance = numTokensSellToAddToLiquidity;
-
-            swapAndDistribute(contractTokenBalance);
-        }
-
-        //transfer amount, it will take fee
-        _tokenTransfer(from, to, amount);
-    }
-
-    function swapAndDistribute(uint256 contractTokenBalance)
-        private
-        lockTheSwap
-    {
-        uint256 total = buyFee.marketing +
-            sellFee.marketing +
-            buyFee.autoLp +
-            sellFee.autoLp +
-            buyFee.burn +
-            sellFee.burn +
-            buyFee.team +
-            sellFee.team;
-
-        uint256 forLiquidity = (contractTokenBalance *
-            (buyFee.autoLp + sellFee.autoLp)) / total;
-        swapAndLiquify(forLiquidity);
-
-        uint256 forBurn = (contractTokenBalance *
-            (buyFee.burn + sellFee.burn)) / total;
-        sendToBurn(forBurn);
-
-        uint256 forMarketing = (contractTokenBalance *
-            (buyFee.marketing + sellFee.marketing)) / total;
-        sendToMarketing(forMarketing);
-
-        uint256 forTeam = (contractTokenBalance *
-            (buyFee.team + sellFee.team)) / total;
-        sendToTeam(forTeam);
-
-        emit LogSwapAndDistribute(forMarketing, forLiquidity, forBurn, forTeam);
-    }
-
-    function sendToBurn(uint256 tBurn) private {
-        uint256 currentRate = _getRate();
-        uint256 rBurn = tBurn * currentRate;
-
-        _rOwned[burnWallet] = _rOwned[burnWallet] + rBurn;
-        _rOwned[address(this)] = _rOwned[address(this)] - rBurn;
-
-        if (_isExcluded[burnWallet])
-            _tOwned[burnWallet] = _tOwned[burnWallet] + tBurn;
-
-        if (_isExcluded[address(this)])
-            _tOwned[address(this)] = _tOwned[address(this)] - tBurn;
-
-        emit Transfer(address(this), burnWallet, tBurn);
-    }
-
-    function sendToTeam(uint256 tTeam) private {
-        uint256 currentRate = _getRate();
-        uint256 rTeam = tTeam * currentRate;
-
-        _rOwned[teamWallet] = _rOwned[teamWallet] + rTeam;
-        _rOwned[address(this)] = _rOwned[address(this)] - rTeam;
-
-        if (_isExcluded[teamWallet])
-            _tOwned[teamWallet] = _tOwned[teamWallet] + tTeam;
-
-        if (_isExcluded[address(this)])
-            _tOwned[address(this)] = _tOwned[address(this)] - tTeam;
-
-        emit Transfer(address(this), teamWallet, tTeam);
-    }
-
-    function sendToMarketing(uint256 tMarketing) private {
-        uint256 currentRate = _getRate();
-        uint256 rMarketing = tMarketing * currentRate;
-
-        _rOwned[marketingWallet] = _rOwned[marketingWallet] + rMarketing;
-        _rOwned[address(this)] = _rOwned[address(this)] - rMarketing;
-
-        if (_isExcluded[marketingWallet])
-            _tOwned[marketingWallet] = _tOwned[marketingWallet] + tMarketing;
-
-        if (_isExcluded[address(this)])
-            _tOwned[address(this)] = _tOwned[address(this)] - tMarketing;
-
-        emit Transfer(address(this), marketingWallet, tMarketing);
-    }
-
-    function swapAndLiquify(uint256 tokens) private {
-        uint256 half = tokens / 2;
-        uint256 otherHalf = tokens - half;
-
-        uint256 initialBalance = address(this).balance;
-
-        swapTokensForETH(half);
-
-        uint256 newBalance = address(this).balance - initialBalance;
-
-        addLiquidity(otherHalf, newBalance);
-
-        emit LogSwapAndLiquify(half, newBalance, otherHalf);
-    }
-
-    function swapTokensForETH(uint256 tokenAmount) private {
-        address[] memory path = new address[](2);
-        path[0] = address(this);
-        path[1] = _v2Router.WETH();
-
-        _approve(address(this), address(_v2Router), tokenAmount);
-
-        _v2Router.swapExactTokensForETHSupportingFeeOnTransferTokens(
-            tokenAmount,
-            0, // slippage is unavoidable
-            path,
-            address(this),
-            block.timestamp
-        );
-    }
-
-    function addLiquidity(uint256 tokenAmount, uint256 ethAmount) private {
-        _approve(address(this), address(_v2Router), tokenAmount);
-
-        // Skip `Return value check`
-        _v2Router.addLiquidityETH{value: ethAmount}(
-            address(this),
-            tokenAmount,
-            0, // slippage is unavoidable
-            0, // slippage is unavoidable
-            liquidityMultiSig,
-            block.timestamp
-        );
-    }
-
-    function _tokenTransfer(
-        address sender,
-        address recipient,
+    /**
+     * @dev Hook that is called after any transfer of tokens. This includes
+     * minting and burning.
+     *
+     * Calling conditions:
+     *
+     * - when `from` and `to` are both non-zero, `amount` of ``from``'s tokens
+     * has been transferred to `to`.
+     * - when `from` is zero, `amount` tokens have been minted for `to`.
+     * - when `to` is zero, `amount` of ``from``'s tokens have been burned.
+     * - `from` and `to` are never both zero.
+     *
+     * To learn more about hooks, head to xref:ROOT:extending-contracts.adoc#using-hooks[Using Hooks].
+     */
+    function _afterTokenTransfer(
+        address from,
+        address to,
         uint256 amount
-    ) private {
-        if (!_isExcludedFromFee[sender] && !_isExcludedFromFee[recipient]) {
-            require(isTradingEnabled, "Trading is disabled");
-
-            if (ammPairs[sender] == true) {
-                shouldTakeFee = true;
-                setBuyFee();
-            } else if (ammPairs[recipient] == true) {
-                shouldTakeFee = true;
-                setSellFee();
-            }
-        }
-
-        if (_isExcluded[sender] && !_isExcluded[recipient]) {
-            _transferFromExcluded(sender, recipient, amount);
-        } else if (!_isExcluded[sender] && _isExcluded[recipient]) {
-            _transferToExcluded(sender, recipient, amount);
-        } else if (_isExcluded[sender] && _isExcluded[recipient]) {
-            _transferBothExcluded(sender, recipient, amount);
-        } else {
-            _transferStandard(sender, recipient, amount);
-        }
-
-        if (shouldTakeFee == true) {
-            shouldTakeFee = false;
-            restoreAllFee();
-        }
-    }
-
-    function _takeFee(
-        address sender,
-        uint256 tAmount,
-        uint256 tLiquidity,
-        uint256 tFee,
-        uint256 rFee
-    ) private {
-        if (shouldTakeFee == true) {
-            uint256 tMarketing = calculateMarketingFee(tAmount);
-            uint256 tBurn = calculateBurnFee(tAmount);
-            uint256 tTeam = calculateTeamFee(tAmount);
-
-            _takeLiquidity(tLiquidity);
-            _takeMarketingAndBurn(tMarketing, tBurn);
-            _takeTeam(tTeam);
-            // reflection
-            _reflectFee(rFee, tFee);
-
-            // rFee, tFee
-            // `tFee` will miss Transfer event and then with the `tFee`, reflect to all holders.
-            emit Transfer(
-                sender,
-                address(this),
-                tLiquidity + tMarketing + tBurn + tTeam
-            );
-        }
-    }
-
-    function _transferStandard(
-        address sender,
-        address recipient,
-        uint256 tAmount
-    ) private {
-        (
-            uint256 rAmount,
-            uint256 rTransferAmount,
-            uint256 rFee,
-            uint256 tTransferAmount,
-            uint256 tFee,
-            uint256 tLiquidity
-        ) = _getValues(tAmount);
-        _rOwned[sender] = _rOwned[sender] - rAmount;
-        _rOwned[recipient] = _rOwned[recipient] + rTransferAmount;
-        _takeFee(sender, tAmount, tLiquidity, tFee, rFee);
-        emit Transfer(sender, recipient, tTransferAmount);
-    }
-
-    function _transferToExcluded(
-        address sender,
-        address recipient,
-        uint256 tAmount
-    ) private {
-        (
-            uint256 rAmount,
-            uint256 rTransferAmount,
-            uint256 rFee,
-            uint256 tTransferAmount,
-            uint256 tFee,
-            uint256 tLiquidity
-        ) = _getValues(tAmount);
-        _rOwned[sender] = _rOwned[sender] - rAmount;
-        _tOwned[recipient] = _tOwned[recipient] + tTransferAmount;
-        _rOwned[recipient] = _rOwned[recipient] + rTransferAmount;
-        _takeFee(sender, tAmount, tLiquidity, tFee, rFee);
-        emit Transfer(sender, recipient, tTransferAmount);
-    }
-
-    function _transferFromExcluded(
-        address sender,
-        address recipient,
-        uint256 tAmount
-    ) private {
-        (
-            uint256 rAmount,
-            uint256 rTransferAmount,
-            uint256 rFee,
-            uint256 tTransferAmount,
-            uint256 tFee,
-            uint256 tLiquidity
-        ) = _getValues(tAmount);
-        _tOwned[sender] = _tOwned[sender] - tAmount;
-        _rOwned[sender] = _rOwned[sender] - rAmount;
-        _rOwned[recipient] = _rOwned[recipient] + rTransferAmount;
-        _takeFee(sender, tAmount, tLiquidity, tFee, rFee);
-        emit Transfer(sender, recipient, tTransferAmount);
-    }
-
-    function _transferBothExcluded(
-        address sender,
-        address recipient,
-        uint256 tAmount
-    ) private {
-        (
-            uint256 rAmount,
-            uint256 rTransferAmount,
-            uint256 rFee,
-            uint256 tTransferAmount,
-            uint256 tFee,
-            uint256 tLiquidity
-        ) = _getValues(tAmount);
-        _tOwned[sender] = _tOwned[sender] - tAmount;
-        _rOwned[sender] = _rOwned[sender] - rAmount;
-        _tOwned[recipient] = _tOwned[recipient] + tTransferAmount;
-        _rOwned[recipient] = _rOwned[recipient] + rTransferAmount;
-        _takeFee(sender, tAmount, tLiquidity, tFee, rFee);
-        emit Transfer(sender, recipient, tTransferAmount);
-    }
-
-    function isExcludedFromReward(address account)
-        external
-        view
-        returns (bool)
-    {
-        return _isExcluded[account];
-    }
-
-    function totalFees() external view returns (uint256) {
-        return _tFeeTotal;
-    }
-
-    function isExcludedFromFee(address account) external view returns (bool) {
-        return _isExcludedFromFee[account];
-    }
-
-    function setExcludeFromFee(address account, bool enabled)
-        external
-        onlyMultiSig
-    {
-        require(account != address(0), "Zero Address");
-        require(
-            _isExcludedFromFee[account] != enabled,
-            "Already set the same value"
-        );
-        _isExcludedFromFee[account] = enabled;
-        emit LogSetExcludeFromFee(msg.sender, account, enabled);
-    }
-
-    function setMarketingWallet(address newWallet) external onlyMultiSig {
-        require(newWallet != address(0), "Zero Address");
-        require(newWallet != marketingWallet, "Same Address");
-        marketingWallet = newWallet;
-        emit LogSetMarketingWallet(msg.sender, marketingWallet);
-    }
-
-    function setBurnWallet(address newWallet) external onlyMultiSig {
-        require(newWallet != address(0), "Zero Address");
-        require(newWallet != burnWallet, "Same Address");
-        burnWallet = newWallet;
-        emit LogSetBurnWallet(msg.sender, burnWallet);
-    }
-
-    function setTeamWallet(address newWallet) external onlyMultiSig {
-        require(newWallet != address(0), "Zero Address");
-        require(newWallet != teamWallet, "Same Address");
-        teamWallet = newWallet;
-        emit LogSetTeamWallet(msg.sender, teamWallet);
-    }
-
-    function setLiquidityWallet(address newLiquidityMultiSigWallet)
-        external
-        onlyMultiSig
-    {
-        require(newLiquidityMultiSigWallet != address(0), "Zero Address");
-        require(
-            newLiquidityMultiSigWallet != liquidityMultiSig,
-            "Same Address"
-        );
-        liquidityMultiSig = newLiquidityMultiSigWallet;
-        emit LogSetLiquidityWallet(msg.sender, newLiquidityMultiSigWallet);
-    }
-
-    function setEnableTrading(bool enable) external onlyMultiSig {
-        require(isTradingEnabled != enable, "Already set the same value");
-        isTradingEnabled = enable;
-        emit LogSetEnableTrading(isTradingEnabled);
-    }
-
-    function setBuyFees(
-        uint256 _lp,
-        uint256 _marketing,
-        uint256 _burn,
-        uint256 _tax,
-        uint256 _team
-    ) external onlyMultiSig {
-        require(
-            !(buyFee.autoLp == _lp &&
-                buyFee.marketing == _marketing &&
-                buyFee.burn == _burn &&
-                buyFee.tax == _tax &&
-                buyFee.team == _team),
-            "Nothing is changed"
-        );
-        require(
-            (_lp + _marketing + _burn + _tax + _team) <= MAX_BUY_FEE,
-            "Overflow MAX_BUY_FEE"
-        );
-        buyFee.autoLp = _lp;
-        buyFee.marketing = _marketing;
-        buyFee.burn = _burn;
-        buyFee.tax = _tax;
-        buyFee.team = _team;
-
-        emit LogSetBuyFees(msg.sender, buyFee);
-    }
-
-    function setSellFees(
-        uint256 _lp,
-        uint256 _marketing,
-        uint256 _burn,
-        uint256 _tax,
-        uint256 _team
-    ) external onlyMultiSig {
-        require(
-            !(sellFee.autoLp == _lp &&
-                sellFee.marketing == _marketing &&
-                sellFee.burn == _burn &&
-                sellFee.tax == _tax &&
-                sellFee.team == _team),
-            "Nothing is changed"
-        );
-        require(
-            (_lp + _marketing + _burn + _tax + _team) <= MAX_SELL_FEE,
-            "Overflow MAX_SELL_FEE"
-        );
-        sellFee.autoLp = _lp;
-        sellFee.marketing = _marketing;
-        sellFee.burn = _burn;
-        sellFee.tax = _tax;
-        sellFee.team = _team;
-
-        emit LogSetSellFees(msg.sender, sellFee);
-    }
-
-    /**
-     * @notice  Owner must check the `pair` address before call `setAutomatedMarketMakerPair`.
-     */
-    function setAutomatedMarketMakerPair(address pair, bool enabled)
-        public
-        onlyMultiSig
-    {
-        require(pair != address(0), "Zero Address");
-        require(ammPairs[pair] != enabled, "Already set the same value");
-        ammPairs[pair] = enabled;
-
-        emit LogSetAutomatedMarketMakerPair(msg.sender, pair, enabled);
-    }
-
-    /**
-     * @notice  Owner must check the `newRouter` address before call `setAutomatedMarketMakerPair`.
-     */
-    function setRouterAddress(address newRouter) external onlyMultiSig {
-        require(newRouter != address(0), "Zero Address");
-        require(newRouter != address(_v2Router), "Same Address");
-        _v2Router = IV2Router02(newRouter);
-
-        emit LogSetRouterAddress(msg.sender, newRouter);
-    }
-
-    function setSwapAndLiquifyEnabled(bool _enabled) external onlyMultiSig {
-        require(
-            swapAndLiquifyEnabled != _enabled,
-            "Already set the same value"
-        );
-        swapAndLiquifyEnabled = _enabled;
-
-        emit LogSwapAndLiquifyEnabledUpdated(msg.sender, _enabled);
-    }
-
-    function setSwapTokensAmount(uint256 amount) external onlyMultiSig {
-        require(
-            numTokensSellToAddToLiquidity != amount,
-            "Already set the same value"
-        );
-        numTokensSellToAddToLiquidity = amount;
-
-        emit LogSetSwapTokensAmount(msg.sender, amount);
-    }
-
-    function excludeFromReward(address account) external onlyMultiSig {
-        require(!_isExcluded[account], "Account is already excluded");
-        if (_rOwned[account] > 0) {
-            _tOwned[account] = tokenFromReflection(_rOwned[account]);
-        }
-        _isExcluded[account] = true;
-        _excluded.push(account);
-
-        emit LogExcludeFromReward(account);
-    }
-
-    function includeInReward(address account) external onlyMultiSig {
-        require(_isExcluded[account], "Account is already included");
-        for (uint256 i = 0; i < _excluded.length; i++) {
-            if (_excluded[i] == account) {
-                _excluded[i] = _excluded[_excluded.length - 1];
-                _tOwned[account] = 0;
-                _isExcluded[account] = false;
-                _excluded.pop();
-                break;
-            }
-        }
-
-        emit LogIncludeInReward(account);
-    }
-
-    /**
-     * @notice  Owner will withdraw ETH and will use to benefit the token holders.
-     */
-    function withdrawETH(address payable recipient, uint256 amount)
-        external
-        onlyMultiSig
-    {
-        require(amount <= (address(this)).balance, "INSUFFICIENT_FUNDS");
-        recipient.transfer(amount);
-        emit LogWithdrawalETH(recipient, amount);
-    }
-
-    /**
-     * @notice  Owner will withdraw ERC20 token that have the price and then will use to benefit the token holders.
-     #          Should not be withdrawn scam token or this token.
-     *          Use `withdraw` function to withdraw this token.
-     */
-    function withdrawToken(
-        IERC20 token,
-        address recipient,
-        uint256 amount
-    ) external onlyMultiSig {
-        require(amount <= token.balanceOf(address(this)), "INSUFFICIENT_FUNDS");
-        require(token.transfer(recipient, amount), "Transfer Fail");
-
-        emit LogWithdrawToken(address(token), recipient, amount);
-    }
-
-    /**
-     * @notice  Owner will withdraw token and then will use to benefit the holders.
-     *          The onlyMultiSig will withdraw this token to `recipient`.
-     */
-    function withdraw(address recipient, uint256 tAmount)
-        external
-        onlyMultiSig
-    {
-        require(recipient != address(0), "ERC20: transfer to the zero address");
-        require(tAmount > 0, "Withdrawal amount must be greater than zero");
-
-        if (_isExcluded[address(this)] && !_isExcluded[recipient]) {
-            _transferFromExcluded(address(this), recipient, tAmount);
-        } else if (!_isExcluded[address(this)] && _isExcluded[recipient]) {
-            _transferToExcluded(address(this), recipient, tAmount);
-        } else if (_isExcluded[address(this)] && _isExcluded[recipient]) {
-            _transferBothExcluded(address(this), recipient, tAmount);
-        } else {
-            _transferStandard(address(this), recipient, tAmount);
-        }
-
-        emit LogWithdrawal(recipient, tAmount);
-    }
+    ) internal virtual {}
 }
