@@ -1191,10 +1191,7 @@ contract Cutoken is IERC20, Ownable {
         onlyMultiSig
     {
         require(pair != address(0), "Zero Address");
-        require(
-            ammPairs[pair] != enabled,
-            "Already set the same value"
-        );
+        require(ammPairs[pair] != enabled, "Already set the same value");
         ammPairs[pair] = enabled;
 
         emit LogSetAutomatedMarketMakerPair(msg.sender, pair, enabled);
