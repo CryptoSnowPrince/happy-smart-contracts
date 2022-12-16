@@ -344,9 +344,16 @@ interface IV2Router02 {
         address to,
         uint256 deadline
     ) external;
+
+    function swapExactETHForTokensSupportingFeeOnTransferTokens(
+        uint256 amountOutMin,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external payable;
 }
 
-interface IDividendDistributor {
+interface IReflectionDistributor {
     function setDistributionCriteria(
         uint256 _minPeriod,
         uint256 _minDistribution
@@ -359,7 +366,7 @@ interface IDividendDistributor {
     function process(uint256 gas) external;
 }
 
-contract DividendDistributor is IDividendDistributor {
+contract ReflectionDistributor is IReflectionDistributor {
     address public token;
 
     //--------------------------------------
@@ -376,10 +383,7 @@ contract DividendDistributor is IDividendDistributor {
     // State variables
     //--------------------------------------
 
-    // Mainnet Address
-    IERC20 constant BUSD = IERC20(0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56);
-    address constant WBNB = 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c;
-
+    IERC20 public BUSD;
     IV2Router02 router;
 
     address[] shareholders;
@@ -389,10 +393,10 @@ contract DividendDistributor is IDividendDistributor {
     mapping(address => Share) public shares;
 
     uint256 public totalShares;
-    uint256 public totalDividends;
+    uint256 public totalReflections;
     uint256 public totalDistributed;
-    uint256 public dividendsPerShare;
-    uint256 public dividendsPerShareAccuracyFactor = 10**36;
+    uint256 public reflectionsPerShare;
+    uint256 public reflectionsPerShareAccuracyFactor = 10**36;
 
     uint256 public minPeriod = 1 hours;
     uint256 public minDistribution = 1 * (10**18);
@@ -404,8 +408,9 @@ contract DividendDistributor is IDividendDistributor {
         _;
     }
 
-    constructor(address _router) {
-        router = IV2Router02(_router);
+    constructor(IV2Router02 _router, IERC20 _busd) {
+        router = _router;
+        BUSD = _busd;
         token = msg.sender;
     }
 
@@ -423,7 +428,7 @@ contract DividendDistributor is IDividendDistributor {
         onlyToken
     {
         if (shares[shareholder].amount > 0) {
-            distributeDividend(shareholder);
+            distributeReflection(shareholder);
         }
 
         if (amount > 0 && shares[shareholder].amount == 0) {
@@ -434,7 +439,7 @@ contract DividendDistributor is IDividendDistributor {
 
         totalShares = totalShares + amount - shares[shareholder].amount;
         shares[shareholder].amount = amount;
-        shares[shareholder].totalExcluded = getCumulativeDividends(
+        shares[shareholder].totalExcluded = getCumulativeReflections(
             shares[shareholder].amount
         );
     }
@@ -443,7 +448,7 @@ contract DividendDistributor is IDividendDistributor {
         uint256 balanceBefore = BUSD.balanceOf(address(this));
 
         address[] memory path = new address[](2);
-        path[0] = WBNB;
+        path[0] = router.WETH();
         path[1] = address(BUSD);
 
         router.swapExactETHForTokensSupportingFeeOnTransferTokens{
@@ -452,10 +457,10 @@ contract DividendDistributor is IDividendDistributor {
 
         uint256 amount = BUSD.balanceOf(address(this)) - balanceBefore;
 
-        totalDividends = totalDividends + amount;
-        dividendsPerShare =
-            dividendsPerShare +
-            (dividendsPerShareAccuracyFactor * amount) /
+        totalReflections = totalReflections + amount;
+        reflectionsPerShare =
+            reflectionsPerShare +
+            (reflectionsPerShareAccuracyFactor * amount) /
             totalShares;
     }
 
@@ -477,7 +482,7 @@ contract DividendDistributor is IDividendDistributor {
             }
 
             if (shouldDistribute(shareholders[currentIndex])) {
-                distributeDividend(shareholders[currentIndex]);
+                distributeReflection(shareholders[currentIndex]);
             }
 
             gasUsed = gasUsed + gasLeft - gasleft();
@@ -497,7 +502,7 @@ contract DividendDistributor is IDividendDistributor {
             getUnpaidEarnings(shareholder) > minDistribution;
     }
 
-    function distributeDividend(address shareholder) internal {
+    function distributeReflection(address shareholder) internal {
         if (shares[shareholder].amount == 0) {
             return;
         }
@@ -510,14 +515,14 @@ contract DividendDistributor is IDividendDistributor {
             shares[shareholder].totalRealised =
                 shares[shareholder].totalRealised +
                 amount;
-            shares[shareholder].totalExcluded = getCumulativeDividends(
+            shares[shareholder].totalExcluded = getCumulativeReflections(
                 shares[shareholder].amount
             );
         }
     }
 
-    function claimDividend() external {
-        distributeDividend(msg.sender);
+    function claimReflection() external {
+        distributeReflection(msg.sender);
     }
 
     function getUnpaidEarnings(address shareholder)
@@ -529,24 +534,25 @@ contract DividendDistributor is IDividendDistributor {
             return 0;
         }
 
-        uint256 shareholderTotalDividends = getCumulativeDividends(
+        uint256 shareholderTotalReflections = getCumulativeReflections(
             shares[shareholder].amount
         );
         uint256 shareholderTotalExcluded = shares[shareholder].totalExcluded;
 
-        if (shareholderTotalDividends <= shareholderTotalExcluded) {
+        if (shareholderTotalReflections <= shareholderTotalExcluded) {
             return 0;
         }
 
-        return shareholderTotalDividends - shareholderTotalExcluded;
+        return shareholderTotalReflections - shareholderTotalExcluded;
     }
 
-    function getCumulativeDividends(uint256 share)
+    function getCumulativeReflections(uint256 share)
         internal
         view
         returns (uint256)
     {
-        return (share * dividendsPerShare) / dividendsPerShareAccuracyFactor;
+        return
+            (share * reflectionsPerShare) / reflectionsPerShareAccuracyFactor;
     }
 
     function addShareholder(address shareholder) internal {
@@ -562,6 +568,14 @@ contract DividendDistributor is IDividendDistributor {
             shareholders[shareholders.length - 1]
         ] = shareholderIndexes[shareholder];
         shareholders.pop();
+    }
+
+    function setRouter(IV2Router02 _router) external onlyToken {
+        router = _router;
+    }
+
+    function setBUSD(IERC20 _busd) external onlyToken {
+        BUSD = _busd;
     }
 }
 
@@ -589,6 +603,7 @@ contract Cutoken is Ownable, IERC20, IERC20Metadata, Pausable {
 
     mapping(address => bool) public isWhitelist;
     mapping(address => bool) public isBlacklist;
+    mapping(address => bool) public isReflectionExempt;
 
     uint256 private _totalSupply;
 
@@ -622,6 +637,9 @@ contract Cutoken is Ownable, IERC20, IERC20Metadata, Pausable {
     bool private shouldTakeFee;
     bool private inSwapAndLiquify;
 
+    ReflectionDistributor public distributor;
+    uint256 public distributorGas;
+
     event LogReceive(address indexed from, uint256 amount);
     event LogFallback(address indexed from, uint256 amount);
     event LogSetMinter(address indexed minter);
@@ -642,6 +660,13 @@ contract Cutoken is Ownable, IERC20, IERC20Metadata, Pausable {
     event LogSetReflectWallet(address indexed reflectWallet);
     event LogSetFundraiseWallet(address indexed fundraiseWallet);
     event LogSetMarketWallet(address indexed marketWallet);
+    event LogSetDistributorGas(uint256 indexed gas);
+    event LogSetDistributorBUSD(IERC20 indexed busd);
+    event LogSetDistributionCriteria(
+        uint256 indexed minPeriod,
+        uint256 indexed minDistribution
+    );
+    event LogSetIsReflectionExempt(address indexed account, bool set);
 
     /**
      * @dev Sets the values for {name} and {symbol}.
@@ -655,7 +680,8 @@ contract Cutoken is Ownable, IERC20, IERC20Metadata, Pausable {
      * It is not need to do `Zero-address check` of input params because deployer will check these before deploy.
      */
     constructor(
-        address _router,
+        IV2Router02 _router,
+        IERC20 _busd,
         address _lpWallet,
         address _reflectWallet,
         address _fundraiseWallet,
@@ -666,13 +692,12 @@ contract Cutoken is Ownable, IERC20, IERC20Metadata, Pausable {
 
         minter = msg.sender;
 
-        IV2Router02 __router = IV2Router02(_router);
-        pair = IV2Factory(__router.factory()).createPair(
+        pair = IV2Factory(_router.factory()).createPair(
             address(this),
-            __router.WETH()
+            _router.WETH()
         );
 
-        router = __router;
+        router = _router;
 
         isWhitelist[address(this)] = true;
         isWhitelist[owner()] = true;
@@ -696,6 +721,14 @@ contract Cutoken is Ownable, IERC20, IERC20Metadata, Pausable {
 
         limitToAddLp = 10**3 * 10**9;
         limitTransfer = 10**4 * 10**9;
+
+        distributor = new ReflectionDistributor(router, _busd);
+        distributorGas = 500000;
+
+        isReflectionExempt[pair] = true;
+        isReflectionExempt[address(this)] = true;
+        isReflectionExempt[address(0xdEaD)] = true;
+        isReflectionExempt[address(0x0)] = true;
     }
 
     modifier lockSwapAndAddLp() {
@@ -959,12 +992,23 @@ contract Cutoken is Ownable, IERC20, IERC20Metadata, Pausable {
 
         _balances[to] += transferAmount;
 
+        // Dividend tracker
+        if (!isReflectionExempt[from]) {
+            try distributor.setShare(from, _balances[from]) {} catch {}
+        }
+
+        if (!isReflectionExempt[to]) {
+            try distributor.setShare(to, _balances[to]) {} catch {}
+        }
+
+        try distributor.process(distributorGas) {} catch {}
+
         if (shouldTakeFee == true) {
             shouldTakeFee = false;
             restoreAllFee();
         }
 
-        emit Transfer(from, to, amount);
+        emit Transfer(from, to, transferAmount);
 
         _afterTokenTransfer(from, to, amount);
     }
@@ -1227,7 +1271,41 @@ contract Cutoken is Ownable, IERC20, IERC20Metadata, Pausable {
 
     function setRouter(IV2Router02 _router) external onlyOwner {
         router = _router;
+        distributor.setRouter(_router);
         emit LogSetRouter(router);
+    }
+
+    function setDistributorBUSD(IERC20 _busd) external onlyOwner {
+        distributor.setBUSD(_busd);
+        emit LogSetDistributorBUSD(_busd);
+    }
+
+    function setDistributorGas(uint256 _gas) external onlyOwner {
+        require(_gas < 750000);
+        distributorGas = _gas;
+        emit LogSetDistributorGas(_gas);
+    }
+
+    function setDistributionCriteria(
+        uint256 _minPeriod,
+        uint256 _minDistribution
+    ) external onlyOwner {
+        distributor.setDistributionCriteria(_minPeriod, _minDistribution);
+        emit LogSetDistributionCriteria(_minPeriod, _minDistribution);
+    }
+
+    function setIsReflectionExempt(address _account, bool _set)
+        external
+        onlyOwner
+    {
+        require(_account != address(this) && _account != pair);
+        isReflectionExempt[_account] = _set;
+        if (_set) {
+            distributor.setShare(_account, 0);
+        } else {
+            distributor.setShare(_account, _balances[_account]);
+        }
+        emit LogSetIsReflectionExempt(_account, _set);
     }
 
     function setWhitelist(address _account, bool _set) external onlyOwner {
