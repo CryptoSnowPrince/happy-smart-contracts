@@ -615,9 +615,9 @@ contract Cutoken is Ownable, IERC20, IERC20Metadata, Pausable {
 
     uint256 public limitToAddLp;
     uint256 public limitTransfer;
+    uint256 public limitToReflection;
 
     address public lpWallet;
-    address public reflectWallet;
     address public fundraiseWallet;
     address public marketWallet;
 
@@ -634,6 +634,8 @@ contract Cutoken is Ownable, IERC20, IERC20Metadata, Pausable {
     bool public isTradingEnabled;
     bool public swapAndLiquifyEnabled;
 
+    uint256 public pendingLpFee;
+    uint256 public pendingReflectionFee;
     bool private shouldTakeFee;
     bool private inSwapAndLiquify;
 
@@ -650,14 +652,15 @@ contract Cutoken is Ownable, IERC20, IERC20Metadata, Pausable {
     event LogSetEnableTrading(bool set);
     event LogSetEnableSwapAndLiquify(bool set);
     event LogSetLimitToAddLp(uint256 indexed amount);
+    event LogSetLimitToReflection(uint256 indexed amount);
     event LogSetLimitTransfer(uint256 indexed amount);
     event LogSetBuyFee(address indexed setter, Fee buyFee);
     event LogSetSellFee(address indexed setter, Fee sellFee);
     event LogSwapAndAddLp(uint256 indexed lp, uint256 token, uint256 eth);
+    event LogSwapAndReflection(uint256 indexed eth);
     event LogWithdrawETH(address indexed to, uint256 amount);
     event LogWithdrawToken(IERC20 indexed token, address to, uint256 amount);
     event LogSetLpWallet(address indexed lpWallet);
-    event LogSetReflectWallet(address indexed reflectWallet);
     event LogSetFundraiseWallet(address indexed fundraiseWallet);
     event LogSetMarketWallet(address indexed marketWallet);
     event LogSetDistributorGas(uint256 indexed gas);
@@ -683,7 +686,6 @@ contract Cutoken is Ownable, IERC20, IERC20Metadata, Pausable {
         IV2Router02 _router,
         IERC20 _busd,
         address _lpWallet,
-        address _reflectWallet,
         address _fundraiseWallet,
         address _marketWallet
     ) {
@@ -705,7 +707,6 @@ contract Cutoken is Ownable, IERC20, IERC20Metadata, Pausable {
         swapAndLiquifyEnabled = true;
 
         lpWallet = _lpWallet;
-        reflectWallet = _reflectWallet;
         fundraiseWallet = _fundraiseWallet;
         marketWallet = _marketWallet;
 
@@ -721,6 +722,7 @@ contract Cutoken is Ownable, IERC20, IERC20Metadata, Pausable {
 
         limitToAddLp = 10**3 * 10**9;
         limitTransfer = 10**4 * 10**9;
+        limitToReflection = 10**3 * 10**9;
 
         distributor = new ReflectionDistributor(router, _busd);
         distributorGas = 500000;
@@ -948,7 +950,7 @@ contract Cutoken is Ownable, IERC20, IERC20Metadata, Pausable {
 
         _beforeTokenTransfer(from, to, amount);
 
-        bool isSwapAndAddLp = _balances[address(this)] >= limitToAddLp;
+        bool isSwapAndAddLp = pendingLpFee >= limitToAddLp;
         if (
             swapAndLiquifyEnabled &&
             isSwapAndAddLp &&
@@ -956,7 +958,7 @@ contract Cutoken is Ownable, IERC20, IERC20Metadata, Pausable {
             pair != to &&
             !inSwapAndLiquify
         ) {
-            swapAndAddLp(limitToAddLp);
+            swapAndAddLpAndReflection();
         }
 
         require(!isBlacklist[from] && !isBlacklist[to], "Cutoken: isBlacklist");
@@ -1013,9 +1015,9 @@ contract Cutoken is Ownable, IERC20, IERC20Metadata, Pausable {
         _afterTokenTransfer(from, to, amount);
     }
 
-    function swapAndAddLp(uint256 amount) private lockSwapAndAddLp {
-        uint256 half = amount / 2;
-        uint256 otherHalf = amount - half;
+    function swapAndAddLpAndReflection() private lockSwapAndAddLp {
+        uint256 half = limitToAddLp / 2;
+        uint256 otherHalf = limitToAddLp - half;
 
         uint256 initialBalance = address(this).balance;
 
@@ -1027,6 +1029,22 @@ contract Cutoken is Ownable, IERC20, IERC20Metadata, Pausable {
             otherHalf,
             newBalance
         );
+
+        pendingLpFee -= limitToAddLp;
+
+        if (pendingReflectionFee >= limitToReflection) {
+            initialBalance = address(this).balance;
+
+            swapTokensForETH(limitToReflection);
+
+            newBalance = address(this).balance - initialBalance;
+
+            try distributor.deposit{value: newBalance}() {} catch {}
+
+            pendingReflectionFee -= limitToReflection;
+
+            emit LogSwapAndReflection(newBalance);
+        }
 
         emit LogSwapAndAddLp(lp, token, eth);
     }
@@ -1152,8 +1170,10 @@ contract Cutoken is Ownable, IERC20, IERC20Metadata, Pausable {
             uint256 fundraiseFeeAmount = (amount * fundraiseFee) / DENOMINATOR;
             uint256 marketFeeAmount = (amount * marketFee) / DENOMINATOR;
 
-            _balances[address(this)] += lpFeeAmount;
-            _balances[reflectWallet] += reflectFeeAmount;
+            pendingLpFee += lpFeeAmount;
+            pendingReflectionFee += reflectFeeAmount;
+
+            _balances[address(this)] += (lpFeeAmount + reflectFeeAmount);
             _balances[fundraiseWallet] += fundraiseFeeAmount;
             _balances[marketWallet] += marketFeeAmount;
 
@@ -1162,8 +1182,7 @@ contract Cutoken is Ownable, IERC20, IERC20Metadata, Pausable {
                 fundraiseFeeAmount +
                 marketFeeAmount);
 
-            emit Transfer(from, address(this), lpFeeAmount);
-            emit Transfer(from, reflectWallet, reflectFeeAmount);
+            emit Transfer(from, address(this), lpFeeAmount + reflectFeeAmount);
             emit Transfer(from, fundraiseWallet, fundraiseFeeAmount);
             emit Transfer(from, marketWallet, marketFeeAmount);
         }
@@ -1332,6 +1351,15 @@ contract Cutoken is Ownable, IERC20, IERC20Metadata, Pausable {
         emit LogSetLimitToAddLp(_amount);
     }
 
+    function setLimitToReflection(uint256 _amount) external onlyOwner {
+        require(
+            _amount < (_totalSupply * LIMIT) / DENOMINATOR,
+            "Cutoken: EXCEED_LIMIT_TO_ADD_LP"
+        );
+        limitToReflection = _amount;
+        emit LogSetLimitToReflection(_amount);
+    }
+
     function setLimitTransfer(uint256 _amount) external onlyOwner {
         require(
             _amount < (_totalSupply * LIMIT) / DENOMINATOR,
@@ -1385,11 +1413,6 @@ contract Cutoken is Ownable, IERC20, IERC20Metadata, Pausable {
     function setLpWallet(address _lpWallet) external onlyOwner {
         lpWallet = _lpWallet;
         emit LogSetLpWallet(lpWallet);
-    }
-
-    function setReflectWallet(address _reflectWallet) external onlyOwner {
-        reflectWallet = _reflectWallet;
-        emit LogSetReflectWallet(reflectWallet);
     }
 
     function setFundraiseWallet(address _fundraiseWallet) external onlyOwner {
