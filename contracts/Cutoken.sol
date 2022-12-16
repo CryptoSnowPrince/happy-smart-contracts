@@ -396,7 +396,8 @@ contract ReflectionDistributor is IReflectionDistributor {
     uint256 public totalReflections;
     uint256 public totalDistributed;
     uint256 public reflectionsPerShare;
-    uint256 public reflectionsPerShareAccuracyFactor = 10**36;
+
+    uint256 public constant reflectionsPerShareAccuracyFactor = 10**36;
 
     uint256 public minPeriod = 1 hours;
     uint256 public minDistribution = 1 * (10**18);
