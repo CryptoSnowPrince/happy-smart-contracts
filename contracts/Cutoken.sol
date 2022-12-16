@@ -362,7 +362,7 @@ contract Cutoken is Ownable, IERC20, IERC20Metadata, Pausable {
     // 1: 0.01%, 100: 1%, 10000: 100%
     uint256 public constant MAX_FEE = 5000;
     uint256 public constant DENOMINATOR = 10000;
-    uint256 public constant LIMIT = 1000;
+    uint256 public constant LIMIT = 500;
 
     mapping(address => uint256) private _balances;
 
