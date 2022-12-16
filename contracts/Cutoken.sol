@@ -362,6 +362,7 @@ contract Cutoken is Ownable, IERC20, IERC20Metadata, Pausable {
     // 1: 0.01%, 100: 1%, 10000: 100%
     uint256 public constant MAX_FEE = 5000;
     uint256 public constant DENOMINATOR = 10000;
+    uint256 public constant LIMIT = 1000;
 
     mapping(address => uint256) private _balances;
 
@@ -828,35 +829,6 @@ contract Cutoken is Ownable, IERC20, IERC20Metadata, Pausable {
     }
 
     /**
-     * @dev Destroys `amount` tokens from `account`, reducing the
-     * total supply.
-     *
-     * Emits a {Transfer} event with `to` set to the zero address.
-     *
-     * Requirements:
-     *
-     * - `account` cannot be the zero address.
-     * - `account` must have at least `amount` tokens.
-     */
-    function _burn(address account, uint256 amount) internal virtual {
-        require(account != address(0), "ERC20: burn from the zero address");
-
-        _beforeTokenTransfer(account, address(0), amount);
-
-        uint256 accountBalance = _balances[account];
-        require(accountBalance >= amount, "ERC20: burn amount exceeds balance");
-        unchecked {
-            _balances[account] = accountBalance - amount;
-            // Overflow not possible: amount <= accountBalance <= totalSupply.
-            _totalSupply -= amount;
-        }
-
-        emit Transfer(account, address(0), amount);
-
-        _afterTokenTransfer(account, address(0), amount);
-    }
-
-    /**
      * @dev Sets `amount` as the allowance of `spender` over the `owner` s tokens.
      *
      * This internal function is equivalent to `approve`, and can be used to
@@ -1055,11 +1027,19 @@ contract Cutoken is Ownable, IERC20, IERC20Metadata, Pausable {
     }
 
     function setLimitToAddLp(uint256 _amount) external onlyOwner {
+        require(
+            _amount < (_totalSupply * LIMIT) / DENOMINATOR,
+            "Cutoken: EXCEED_LIMIT_TO_ADD_LP"
+        );
         limitToAddLp = _amount;
         emit LogSetLimitToAddLp(_amount);
     }
 
     function setLimitTransfer(uint256 _amount) external onlyOwner {
+        require(
+            _amount < (_totalSupply * LIMIT) / DENOMINATOR,
+            "Cutoken: EXCEED_LIMIT_TRANSFER"
+        );
         limitTransfer = _amount;
         emit LogSetLimitTransfer(_amount);
     }
